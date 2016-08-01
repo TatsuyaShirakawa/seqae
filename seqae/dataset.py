@@ -8,6 +8,8 @@ import sys
 import nltk
 from nltk.tokenize import word_tokenize
 
+import numpy as np
+
 import msgpack
 
 def sepline(line):
@@ -15,14 +17,11 @@ def sepline(line):
 
 class Vocab(object):
 
-    padding_word = '<sos>'
-    sos_word = '<sos>'
-    eos_word = '<sos>'
-        
+    PADDING_ID = -1
 
-    def __init__(self, padding='<sos>', sos='<sos>', eos='<eos>', unk='<unk>'):
+    def __init__(self, padding='<pad>', sos='<sos>', eos='<eos>', unk='<unk>'):
 
-        self.__padding_id = -1
+        self.__padding_id = self.PADDING_ID
         self.__padding_word = padding
 
         self.__sos_word = sos
@@ -89,7 +88,7 @@ class Vocab(object):
         if word == self.__padding_word:
             return self.__padding_id
         elif word not in self.__word2id:
-            return self.__word2id['<UNK>']
+            return self.__word2id[self.unk_word]
         return self.__word2id[word] if word != self.__padding_word else self.__padding_id
 
     def get_word(self, id):
@@ -116,11 +115,12 @@ class Vocab(object):
             for id, word, count in unpacker:
                 word = word.decode(encoding)
                 self.__set(id=id, word=word, count=count)
+        return self
 
     def save_pack(self, fout, encoding='utf-8'):
         packer = msgpack.Packer()
         for id, word, count in sorted(self.items()):
-            out.write(packer.pack((id, word.encode(encoding), count)))
+            fout.write(packer.pack((id, word.encode(encoding), count)))
 
 
 def create_vocab(fins, min_count=0, max_vocab=None, sepline=sepline):
@@ -132,78 +132,91 @@ def create_vocab(fins, min_count=0, max_vocab=None, sepline=sepline):
     if max_vocab == None:
         max_vocab = float('+inf')
 
-    # entry each words
+    # count words
+    print( "word couting ..." )
+    counter = collections.Counter()
     num_lines = 0
     for fin in fins:
         for line in fin:
             words = sepline(line)
-            # entry <sos> words <eos>
-            result.entry(SOS)
+            counter[result.sos_word] += 1
             for word in words:
-                result.entry(word)
-            result.entry(EOS)
+                counter[word] += 1
+            counter[result.eos_word] += 1
+
             num_lines += 1
             if num_lines % 1000 == 0:
                 print( "\rreaded {} lines.".format(num_lines), end="" )
                 sys.stdout.flush()
+
     print( "\rreaded {} lines.".format(num_lines))
+    print( "{} words.".format(sum(counter.values())) )
     sys.stdout.flush()
 
-    vocab_size_before = len(result)
+    vocab_size_before = len(counter) + 1 # added unk
 
     print( "reconstructing ...")
-    UNK = '<unk>'
-    # replace disfrequent words with UNK
-    tmp_counts = collections.Counter()
-    for id, word, count in result.items():
-        if count < min_count:
-            word = result.unknown
-        tmp_counts[word] += count
-
-    if max_vocab == None:
-        counts = tmp_counts
-    else:
-        counts = collections.Counter()
+    
+    # replace unfrequent words with UNK
+    for word, count in counter.items():
+        if count < min_count and word not in (result.sos_word, result.eos_word, result.unk_word):
+            del counter[word]
+            counter[result.unk_word] += count
+    if max_vocab != None:
         # merge disfrequent words (frequency order less than max_vocab) to UNK
-        for i, (word, count) in enumerate(sorted(tmp_counts.items(), key=lambda x : x[1], reverse=True)):  
-            if i >= max_vocab:
-                counts[UNK] += count
-            else:
-                counts[word] = count
+        for i, (word, count) in enumerate(sorted(counter.items(), key=lambda x : x[1], reverse=True)):  
+            if i >= max_vocab and word not in (result.sos_word, result.eos_word, result.unk_word):
+                del counter[word]
+                counter[result.unk_word] += count
 
     result._init()
-    for i, (word, count) in enumerate(sorted(counts.items(), key=lambda x : x[1], reverse=True)):
-        if i >= max_vocab:
-            word = result.unknown
+    
+    for i, (word, count) in enumerate(sorted(counter.items(), key=lambda x : x[1], reverse=True)):
         result.entry(word, count=count)
 
     vocab_size_after = len(result)
-    print("reducing vocab {} -> {} (min_count={})".format(vocab_size_before, vocab_size_after, min_count))
+    print("reducing vocab {} -> {} (min_count={}, max_vocab={})".format(vocab_size_before,
+                                                                        vocab_size_after,
+                                                                        min_count,
+                                                                        max_vocab))
     return result
 
-def encode_file_pack(vocab, fin, fout, input_sepline=sepline):
+def encode_and_pack(vocab, fin, fout, input_sepline=sepline):
 
     packer = msgpack.Packer()
     for line in fin:
         words = input_sepline(line)
         encoded = [vocab.sos_id]
         encoded.extend([vocab.get_id(word) for word in words])
-        encoded = [vocab.eos_id]
+        encoded.append(vocab.eos_id)
         fout.write(packer.pack(encoded))
 
+
+def pad(sentence, length, padding=Vocab.PADDING_ID):
+    return sentence + [padding] * (length - len(sentence))
         
+def as_mat(batch):
+    max_length = max(len(words) for words in batch)
+    result = np.vstack( [ pad(words, max_length) for words in batch] ).astype(np.int32)
+    return result
+
+def as_mat(batch):
+    max_length = max(len(words) for words in batch)
+    result = np.vstack( [ pad(words, max_length) for words in batch] ).astype(np.int32)
+    return result
+
 class MinibatchFeeder(object):
 
     def __init__(self, fin, batch_size, sepline = sepline, 
                  max_num_lines=None, max_line_length=100,
-                 feed_callback=lambda x:x):
+                 feed_callback=as_mat):
         
         self.fin = fin
         self.batch_size = batch_size
         self.sepline = sepline
         self.max_num_lines = max_num_lines
         self.max_line_length = max_line_length
-        self.callback = callback
+        self.feed_callback = feed_callback
 
         self.batch = []
 
