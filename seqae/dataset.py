@@ -129,7 +129,7 @@ def create_vocab(fins, min_count=0, max_vocab=None, sepline=sepline):
     SOS = '<sos>'
     EOS = '<eos>'
 
-    if max_vocab == None:
+    if max_vocab == None or max_vocab < 0:
         max_vocab = float('+inf')
 
     # count words
@@ -162,6 +162,7 @@ def create_vocab(fins, min_count=0, max_vocab=None, sepline=sepline):
         if count < min_count and word not in (result.sos_word, result.eos_word, result.unk_word):
             del counter[word]
             counter[result.unk_word] += count
+
     if max_vocab != None:
         # merge disfrequent words (frequency order less than max_vocab) to UNK
         for i, (word, count) in enumerate(sorted(counter.items(), key=lambda x : x[1], reverse=True)):  

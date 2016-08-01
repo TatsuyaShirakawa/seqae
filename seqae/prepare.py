@@ -23,7 +23,7 @@ def parse_args(args):
 
 args = parse_args(sys.argv)
 train_file = args.train_file
-valid_file = args.valid_fiel
+valid_file = args.valid_file
 test_file = args.test_file
 save_dir = args.save_dir
 

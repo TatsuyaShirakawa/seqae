@@ -6,6 +6,7 @@ from __future__ import division
 import os
 import sys
 import argparse
+import math
 
 import numpy as np
 
@@ -40,11 +41,11 @@ args = parse_args(sys.argv)
 
 gpu = args.gpu
 
-hidden_size = 256
-num_layers = 2
+hidden_size = 512
+num_layers = 4
 num_transfer_layers = 2
 
-batch_size = 50
+batch_size = 128
 
 save_every_batches = 250000//batch_size # save model, optimizers every this batches
 eval_valid_every_batches = 50000//batch_size # evaluate model on valid data every this batches
@@ -90,12 +91,13 @@ print(' load vocab from {} ...'.format(vocab_file) )
 vocab = Vocab().load_pack(open(vocab_file, 'rb'), encoding=encoding)
 
 vocab_size = len(vocab)
-print(' vocab size: {}', format(vocab_size) )
+print(' vocab size: {}'.format(vocab_size) )
 
-train_batches = MinibatchFeeder(open(train_file, 'rb'), batch_size=batch_size)
+train_batches = MinibatchFeeder(open(train_file, 'rb'), batch_size=batch_size, 
+                                max_line_length=max_line_length)
 train_head_batches = MinibatchFeeder(open(train_file, 'rb'), batch_size=batch_size,
-                                     max_line_length=max_line_length)
-valid_batches = MinibatchFeeder(open(valid_file, 'rb'), batch_size=batch_size)
+                                     max_line_length=max_line_length, max_num_lines=1000)
+valid_batches = MinibatchFeeder(open(valid_file, 'rb'), batch_size=batch_size, max_line_length=max_line_length)
 
 print( "train      : {} lines".format(train_batches.num_epoch_lines) )
 print( "train(head): {} lines".format(train_head_batches.num_epoch_lines) )
@@ -125,20 +127,29 @@ def forward(model, batch, train=True):
     model.reset_state()
     model.zerograds()
 
-    def xcode(f, train):
+    def xcode(model, train, encode=True):
         loss = 0
         if not train:
             ys, ts = [], []
         last_w = None
         for i in range(len(batch[0])-1):
             w, next_w = Variable(batch[:, i]), Variable(batch[:, i+1])
-            y = f(w, train=train)            
+            if encode:
+                y = model.encode(w, train=train) 
+            else:
+                y = model.decode(w, train=train)
+
             loss += F.softmax_cross_entropy(y, next_w)
             if not train:
                 ys.append(xp.argmax(y.data, axis=1))
                 ts.append(next_w.data)
             last_w = next_w
-        f(next_w, train=train) # process last words
+        # process last words
+        if encode:
+            model.encode(last_w, train=train) 
+        else:
+            model.decode(last_w, train=train)
+
 
         if train:
             return loss
@@ -152,14 +163,14 @@ def forward(model, batch, train=True):
         
 
     if train:
-        encode_loss = xcode(model.encode, train=train)
+        encode_loss = xcode(model, train=train, encode=True)
         model.transfer(train=train)
-        decode_loss = xcode(model.decode, train=train)
+        decode_loss = xcode(model, train=train, encode=False)
         return (encode_loss, decode_loss)
     else:
-        encode_loss, encode_ys, encode_ts = xcode(model.encode, train=train)
+        encode_loss, encode_ys, encode_ts = xcode(model, train=train, encode=True)
         model.transfer(train=train)
-        decode_loss, decode_ys, decode_ts = xcode(model.decode, train=train)
+        decode_loss, decode_ys, decode_ts = xcode(model, train=train, encode=False)
         return ( (encode_loss, encode_ys, encode_ts),
                  (decode_loss, decode_ys, decode_ts) )
 
@@ -176,29 +187,35 @@ def evaluate(model, batches, vocab):
     sum_max_sentence_length = 0
     
     for batch in batches:
-        cur_max_sentence_length = (batch != ignore_label).sum(axis=1)
+        cur_max_sentence_length = (batch != ignore_label).sum(axis=1).max()
         sum_max_sentence_length += cur_max_sentence_length
         (cur_eloss, cur_eys, cur_ets), (cur_dloss, cur_dys, cur_dts) = forward(model, batch, train=False)
 
         cur_eloss.unchain_backward()
         cur_dloss.unchain_backward()        
 
-        eloss += cur_eloss
-        dloss += cur_dloss
+        eloss += cur_eloss.data
         eys.extend(cur_eys)
         ets.extend(cur_ets)
+
+        dloss += cur_dloss.data
         dys.extend(cur_dys)
         dts.extend(cur_dts)               
 
-    eloss /= sum_max_sentence_length
-    dloss /= sum_max_sentence_length    
+    if use_gpu:
+        eloss = cuda.to_cpu(eloss)
+        dloss = cuda.to_cpu(dloss)
 
-    n = len(encode_ys) // 10 
+    eloss /= sum_max_sentence_length
+    dloss /= sum_max_sentence_length
+
+
+    n = len(eys) // 10 
     if n > 0:
-        encode_ys = [eys[i*n] for i in range(10)]
-        encode_ts = [ets[i*n] for i in range(10)]
-        decode_ys = [dys[i*n] for i in range(10)]
-        decode_ts = [dts[i*n] for i in range(10)]
+        eys = [eys[i*n] for i in range(10)]
+        ets = [ets[i*n] for i in range(10)]
+        dys = [dys[i*n] for i in range(10)]
+        dts = [dts[i*n] for i in range(10)]
 
     assert( len(eys) == len(ets) )
     assert( len(eys) == len(dys) )
@@ -219,23 +236,25 @@ def evaluate(model, batches, vocab):
         print( " ".join([[".", "x"][ dts[i][j] != -1 and dts[i][j] != dys[i][j] ] for j in range(length)]) )
         print()
 
-    print( "encode loss: {}".format( eloss.data ) )
-    print( "encode perp: {}".format( math.exp(eloss.data) ) ) 
+    print( "encode loss: {}".format( eloss ) )
+    print( "encode perp: {}".format( math.exp(eloss) ) ) 
 
-    print( "decode loss: {}".format( dloss.data ) )
-    print( "decode perp: {}".format( math.exp(dloss.data) ) ) 
+    print( "decode loss: {}".format( dloss ) )
+    print( "decode perp: {}".format( math.exp(dloss) ) ) 
     
-def train(model, batches):
+def train(model, batch):
 
     xp = model.xp
     use_gpu = (xp == cuda.cupy)
 
-    for batch in batches:
-        eloss, dloss = forward(model, batch, train=True)
-        loss = eloss + dloss
-        loss.backward()
-        loss.unchain_backward()
-        optimizer.update()
+    if use_gpu:
+        batch = cuda.to_gpu(batch)
+
+    eloss, dloss = forward(model, batch, train=True)
+    loss = eloss + dloss
+    loss.backward()
+    loss.unchain_backward()
+    optimizer.update()
 
 next_save_batch = save_every_batches
 next_eval_valid_batch = 0 # eval initial model
@@ -243,6 +262,7 @@ next_eval_train_batch = 0 # eval initial model
 num_saved = 0
 num_trained_sentences = 0
 num_trained_batches = 0
+
 for epoch in range(max_epoch):
 
     print( "epoch {}/{}".format( epoch + 1, max_epoch ) )
@@ -251,7 +271,7 @@ for epoch in range(max_epoch):
 
         if num_trained_batches == next_save_batch:
             print( "saving model and optimizer ({}/{}) ...".format(num_trained_batches, train_batches.num_epoch_batches ) )
-            prefix = '{}_{}_{}'.format(epoch+1, num_saved+1, num_trained_sents)
+            prefix = '{}_{}_{}'.format(epoch+1, num_saved+1, num_trained_sentences)
 
             model_file = os.path.join(save_dir, prefix + '.model.hdf5')
             print( "save model to {} ...".format(model_file) )
@@ -280,10 +300,10 @@ for epoch in range(max_epoch):
 
             next_eval_train_batch += eval_train_every_batches
 
-        train(model)
+        train(model, batch)
 
         num_trained_batches += 1
-        num_trained_sents += len(batch.data)
+        num_trained_sentences += len(batch.data)
 
         
 print( "saving model and optimizer (last) ...".format(num_trained_batches, train_batches.num_epoch_batches ) )
