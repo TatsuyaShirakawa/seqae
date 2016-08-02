@@ -256,6 +256,13 @@ def train(model, batch):
     loss.unchain_backward()
     optimizer.update()
 
+def save_hdf5(filename, obj):
+    gpu = (hasattr(obj, "xp") and obj.xp == cuda.cupy)
+    if gpu: obj.to_cpu()
+    serializers.save_hdf5(filename, obj)
+    if gpu: obj.to_gpu()
+
+
 next_save_batch = save_every_batches
 next_eval_valid_batch = 0 # eval initial model
 next_eval_train_batch = 0 # eval initial model
