@@ -7,8 +7,11 @@ import os
 import sys
 import argparse
 import math
-
+import random
 import numpy as np
+
+random.seed(0)
+np.random.seed(0)
 
 import chainer
 from chainer import Variable, functions as F, cuda, optimizers, serializers
@@ -45,7 +48,7 @@ hidden_size = 512
 num_layers = 4
 num_transfer_layers = 2
 
-batch_size = 128
+batch_size = 64
 
 save_every_batches = 250000//batch_size # save model, optimizers every this batches
 eval_valid_every_batches = 50000//batch_size # evaluate model on valid data every this batches
@@ -113,7 +116,7 @@ model = Seq2Seq(vocab_size, hidden_size,
 if gpu >= 0:
     model.to_gpu()
 
-optimizer = optimizers.Adam() # beta1 = 0.5 may do better 
+optimizer = optimizers.Adam(beta1=0.5) # beta1 = 0.5 may do better 
 optimizer.setup(model)
 optimizer.add_hook(chainer.optimizer.GradientClipping(5.))
 
