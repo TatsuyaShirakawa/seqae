@@ -44,11 +44,11 @@ args = parse_args(sys.argv)
 
 gpu = args.gpu
 
-hidden_size = 512
+hidden_size = 200
 num_layers = 4
 num_transfer_layers = 2
 
-batch_size = 64
+batch_size = 24
 
 save_every_batches = 250000//batch_size # save model, optimizers every this batches
 eval_valid_every_batches = 50000//batch_size # evaluate model on valid data every this batches

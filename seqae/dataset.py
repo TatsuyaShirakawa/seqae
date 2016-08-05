@@ -210,7 +210,7 @@ class MinibatchFeeder(object):
 
     def __init__(self, fin, batch_size, sepline = sepline, 
                  max_num_lines=None, max_line_length=100,
-                 feed_callback=as_mat):
+                 feed_callback=as_mat, on_memory=False):
         
         self.fin = fin
         self.batch_size = batch_size
@@ -218,19 +218,24 @@ class MinibatchFeeder(object):
         self.max_num_lines = max_num_lines
         self.max_line_length = max_line_length
         self.feed_callback = feed_callback
+        self.on_memory = on_memory
+        self.lines = [] # enabled if on_memory
 
         self.batch = []
 
         self.num_epochs = 0
         self.num_batches = 0
         self.num_lines = 0
-
+        self.line_length_counts = collections.Counter()
+        self.line_length_cumcounts = collections.Counter()
         
-        self.num_epoch_lines = 0
-        self.__set_num_epoch_lines()
+        self.__init_load()
 
-    def __set_num_epoch_lines(self):
-        self.num_epoch_lines = 0
+    def __init_load(self):
+        self.lines = []
+        self.line_length_counts = collections.Counter()
+        self.line_length_cumcounts = collections.Counter()
+
         unpacker = msgpack.Unpacker()
         self.fin.seek(0)
 
@@ -242,14 +247,34 @@ class MinibatchFeeder(object):
                 break
             unpacker.feed(buf)
             for words in unpacker:
-                if self.max_num_lines != None and self.num_epoch_lines == self.max_num_lines:
-                    self.fin.seek(0)
-                    return
-                if len(words) > self.max_line_length:
-                    continue
-                self.num_epoch_lines += 1
+                if self.on_memory:
+                    self.lines.append(words)
+                self.line_length_counts[len(words)] += 1
+
+        cum = 0
+        for length, count in sorted(self.line_length_counts.items()):
+            cum += count
+            self.line_length_cumcounts[length] = cum
+
+        
         self.fin.seek(0)
-                
+
+    def __length_lb(self, length):
+        result = None
+        for cur_length in sorted(self.line_length_counts):
+            if cur_length <= length:
+                result = cur_length
+            else:
+                break
+        return result
+
+    @property
+    def num_epoch_lines(self):
+        if self.max_num_lines is not None:
+            return min(self.line_length_cumcounts[self.__length_lb(self.max_line_length)], self.max_num_lines)
+        else:
+            return self.line_length_cumcounts[self.__length_lb(self.max_line_length)]
+
     @property
     def num_epoch_batches(self):
         return self.num_epoch_lines // self.batch_size
@@ -258,9 +283,31 @@ class MinibatchFeeder(object):
         return self.__next__()
 
     def __next__(self):
-        return self.__next_pack()
+        if self.on_memory:
+            return self.__next_on_memory()
+        else:
+            return self.__next()
 
-    def __next_pack(self):
+    def __next_on_memory(self):
+        self.batch = []
+        num_lines = 0
+        for words in self.lines:
+            if len(words) > self.max_line_length:
+                continue
+            num_lines += 1
+            if self.max_num_lines != None and num_lines == self.max_num_lines:
+                break
+            self.batch.append(words)
+            self.num_lines += 1
+            if len(self.batch) == self.batch_size:
+                self.num_batches += 1
+                yield self.feed_callback(self.batch)
+                self.batch = []
+        self.num_epochs += 1
+        raise StopIteration
+
+
+    def __next(self):
         self.batch = []
         unpacker = msgpack.Unpacker()
         BUFSIZE = 1024 * 1024
@@ -271,11 +318,11 @@ class MinibatchFeeder(object):
                 break
             unpacker.feed(buf)
             for words in unpacker:
+                if len(words) > self.max_line_length:
+                    continue
                 num_lines += 1
                 if self.max_num_lines != None and num_lines == self.max_num_lines:
                     break
-                if len(words) > self.max_line_length:
-                    continue
                 self.batch.append(words)
                 self.num_lines += 1
                 if len(self.batch) == self.batch_size:

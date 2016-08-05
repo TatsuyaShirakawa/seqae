@@ -53,12 +53,12 @@ class RNNLM(Chain):
         for i in range(self.num_layers):
             if self.hs[i] is None:
                 xp = self.xp
-                self.hs[i] = Variable(xp.zeros((batch_size, self.hidden_size), dtype=dtype),
-                                      volatile='auto')
+                self.hs[i] = Variable(xp.zeros((batch_size, self.hidden_size), dtype=dtype))
+#                                      volatile='auto')
             if self.cs[i] is None:
                 xp = self.xp
-                self.cs[i] = Variable(xp.zeros((batch_size, self.hidden_size), dtype=dtype),
-                                      volatile='auto')
+                self.cs[i] = Variable(xp.zeros((batch_size, self.hidden_size), dtype=dtype))
+#                                      volatile='auto')
 
     def __call__(self, w, train=True, dpratio=0.2):
 
@@ -79,18 +79,15 @@ class RNNLM(Chain):
 
             assert( c.data.shape == (len(x.data), self.hidden_size) )
             assert( h.data.shape == (len(x.data), self.hidden_size) )
-
             if self.ignore_label != None:
-                xp = self.xp
                 enable = (x.data != 0)
                 self.cs[i] = F.where(enable, c , self.cs[i])
                 self.hs[i] = F.where(enable, h , self.hs[i])
             else:
                 self.cs[i] = c
                 self.hs[i] = h
-            x = h
-            
-        return self.hy(self.hs[-1])
+            x = self.hs[i]
+        return self.hy(x)
 
             
 class Seq2Seq(Chain):
